@@ -1,0 +1,354 @@
+{
+  "name": "Quiz Auto Grader",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## 1. Cargar clave de respuestas\nPOST /quiz-reference\n```json\n{\n  \"quiz_id\": \"quiz-01\",\n  \"content\": \"q1: La capital de Francia es París (1 pt)...\"\n}\n```\nSe guarda en Pinecone usando quiz_id como namespace.",
+        "height": 420,
+        "width": 900,
+        "color": 4
+      },
+      "id": "a1000000-0000-4000-8000-000000000001",
+      "name": "Nota Carga",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-520, -560]
+    },
+    {
+      "parameters": {
+        "content": "## 2. Calificar cuestionario\nPOST /quiz-auto-grader\n```json\n{\n  \"quiz_id\": \"quiz-01\",\n  \"student_id\": \"A123\",\n  \"student_name\": \"Ana López\",\n  \"answers\": [\n    { \"question_id\": \"q1\", \"question\": \"¿Capital de Francia?\", \"answer\": \"París\" }\n  ]\n}\n```\nResponde con la calificación en JSON y la registra en Google Sheets.",
+        "height": 640,
+        "width": 1700,
+        "color": 5
+      },
+      "id": "a1000000-0000-4000-8000-000000000002",
+      "name": "Nota Calificación",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-520, -80]
+    },
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "quiz-reference",
+        "options": {}
+      },
+      "id": "b1000000-0000-4000-8000-000000000001",
+      "name": "Webhook Clave",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-300, -360],
+      "webhookId": "b1000000-0000-4000-8000-0000000000aa"
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "pineconeIndex": {
+          "__rl": true,
+          "value": "quiz-auto-grader",
+          "mode": "list",
+          "cachedResultName": "quiz-auto-grader"
+        },
+        "options": {
+          "pineconeNamespace": "={{ $json.body.quiz_id }}"
+        }
+      },
+      "id": "b1000000-0000-4000-8000-000000000002",
+      "name": "Pinecone Insertar",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.1,
+      "position": [-60, -360],
+      "credentials": {
+        "pineconeApi": { "id": "PINECONE_API", "name": "Pinecone account" }
+      }
+    },
+    {
+      "parameters": {
+        "model": "embed-multilingual-v3.0"
+      },
+      "id": "b1000000-0000-4000-8000-000000000003",
+      "name": "Embeddings Carga",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsCohere",
+      "typeVersion": 1,
+      "position": [-120, -180],
+      "credentials": {
+        "cohereApi": { "id": "COHERE_API", "name": "Cohere" }
+      }
+    },
+    {
+      "parameters": {
+        "jsonMode": "expressionData",
+        "jsonData": "={{ $json.body.content }}",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              { "name": "quiz_id", "value": "={{ $json.body.quiz_id }}" }
+            ]
+          }
+        }
+      },
+      "id": "b1000000-0000-4000-8000-000000000004",
+      "name": "Data Loader",
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1,
+      "position": [60, -180]
+    },
+    {
+      "parameters": {
+        "chunkSize": 1000,
+        "chunkOverlap": 100,
+        "options": {}
+      },
+      "id": "b1000000-0000-4000-8000-000000000005",
+      "name": "Text Splitter",
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [160, -40]
+    },
+
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "quiz-auto-grader",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-8000-000000000001",
+      "name": "Webhook Calificar",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-300, 200],
+      "webhookId": "c1000000-0000-4000-8000-0000000000aa"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Califica el siguiente cuestionario.\n\nID del cuestionario: {{ $json.body.quiz_id }}\nAlumno: {{ $json.body.student_name }} ({{ $json.body.student_id }})\n\nRespuestas del alumno:\n{{ JSON.stringify($json.body.answers, null, 2) }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "Eres un calificador de cuestionarios riguroso y justo.\n\nReglas:\n1. Antes de calificar, usa la herramienta `clave_respuestas` para obtener la respuesta correcta y el puntaje de cada pregunta. No inventes respuestas correctas.\n2. Califica cada pregunta con un valor entre 0 y su puntaje máximo (1 si la clave no indica otro). Acepta sinónimos, errores menores de ortografía y respuestas equivalentes.\n3. Si no encuentras la respuesta correcta de una pregunta, asígnale 0 puntos, escribe en el feedback que falta en la clave y marca needs_review como true.\n4. El feedback debe ser breve (una oración) y en español.\n5. Devuelve una entrada en `questions` por cada respuesta recibida, conservando su question_id."
+        }
+      },
+      "id": "c1000000-0000-4000-8000-000000000002",
+      "name": "Agente Calificador",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [0, 200],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "options": {
+          "temperature": 0
+        }
+      },
+      "id": "c1000000-0000-4000-8000-000000000003",
+      "name": "OpenAI",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [-240, 420],
+      "credentials": {
+        "openAiApi": { "id": "OPENAI_API", "name": "OpenAI" }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolName": "clave_respuestas",
+        "toolDescription": "Busca en la clave de respuestas del cuestionario la respuesta correcta, criterios y puntaje de una pregunta. Consulta usando el texto o el ID de la pregunta.",
+        "pineconeIndex": {
+          "__rl": true,
+          "value": "quiz-auto-grader",
+          "mode": "list",
+          "cachedResultName": "quiz-auto-grader"
+        },
+        "topK": 6,
+        "options": {
+          "pineconeNamespace": "={{ $('Webhook Calificar').item.json.body.quiz_id }}"
+        }
+      },
+      "id": "c1000000-0000-4000-8000-000000000004",
+      "name": "Pinecone Clave",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.1,
+      "position": [-60, 420],
+      "credentials": {
+        "pineconeApi": { "id": "PINECONE_API", "name": "Pinecone account" }
+      }
+    },
+    {
+      "parameters": {
+        "model": "embed-multilingual-v3.0"
+      },
+      "id": "c1000000-0000-4000-8000-000000000005",
+      "name": "Embeddings Consulta",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsCohere",
+      "typeVersion": 1,
+      "position": [-60, 560],
+      "credentials": {
+        "cohereApi": { "id": "COHERE_API", "name": "Cohere" }
+      }
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n  \"needs_review\": false,\n  \"summary\": \"Buen desempeño general; revisar el tema 3.\",\n  \"questions\": [\n    {\n      \"question_id\": \"q1\",\n      \"points\": 1,\n      \"max_points\": 1,\n      \"correct\": true,\n      \"feedback\": \"Respuesta correcta.\"\n    }\n  ]\n}"
+      },
+      "id": "c1000000-0000-4000-8000-000000000006",
+      "name": "Formato Calificación",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [140, 420]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $('Webhook Calificar').first().json.body;\nconst r = $input.first().json.output || {};\nconst qs = Array.isArray(r.questions) ? r.questions : [];\n\n// El puntaje se calcula aquí, no se confía en la suma del modelo\nconst score = qs.reduce((s, q) => s + (Number(q.points) || 0), 0);\nconst max = qs.reduce((s, q) => s + (Number(q.max_points) || 1), 0);\nconst pct = max ? Math.round((score / max) * 1000) / 10 : 0;\n\n// Si faltan preguntas en la respuesta del modelo, marcar para revisión\nconst expected = Array.isArray(body.answers) ? body.answers.length : 0;\nconst needsReview = Boolean(r.needs_review) || qs.length !== expected;\n\nconst resultado = {\n  quiz_id: body.quiz_id,\n  student_id: body.student_id,\n  student_name: body.student_name,\n  score,\n  max_score: max,\n  percentage: pct,\n  needs_review: needsReview,\n  summary: r.summary || '',\n  questions: qs\n};\n\nreturn [{\n  json: {\n    Fecha: new Date().toISOString(),\n    Quiz: body.quiz_id,\n    'ID alumno': body.student_id,\n    Alumno: body.student_name,\n    Puntaje: score,\n    'Puntaje máximo': max,\n    Porcentaje: pct,\n    Revisar: needsReview ? 'Sí' : 'No',\n    Resumen: resultado.summary,\n    Detalle: JSON.stringify(qs),\n    resultado\n  }\n}];"
+      },
+      "id": "c1000000-0000-4000-8000-000000000007",
+      "name": "Preparar Fila",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [320, 120]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Fecha": "={{ $json.Fecha }}",
+            "Quiz": "={{ $json.Quiz }}",
+            "ID alumno": "={{ $json['ID alumno'] }}",
+            "Alumno": "={{ $json.Alumno }}",
+            "Puntaje": "={{ $json.Puntaje }}",
+            "Puntaje máximo": "={{ $json['Puntaje máximo'] }}",
+            "Porcentaje": "={{ $json.Porcentaje }}",
+            "Revisar": "={{ $json.Revisar }}",
+            "Resumen": "={{ $json.Resumen }}",
+            "Detalle": "={{ $json.Detalle }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-8000-000000000008",
+      "name": "Registrar en Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [540, 120],
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "SHEETS_API", "name": "Google Sheets account" }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($('Preparar Fila').first().json.resultado) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-8000-000000000009",
+      "name": "Responder Resultado",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [760, 120]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#alerts",
+          "mode": "name"
+        },
+        "text": "=:warning: Quiz Auto Grader falló\nQuiz: {{ $('Webhook Calificar').first().json.body.quiz_id }}\nAlumno: {{ $('Webhook Calificar').first().json.body.student_id }}\nError: {{ $json.error?.message ?? JSON.stringify($json.error) }}",
+        "otherOptions": {}
+      },
+      "id": "c1000000-0000-4000-8000-000000000010",
+      "name": "Alerta Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [320, 320],
+      "credentials": {
+        "slackApi": { "id": "SLACK_API", "name": "Slack" }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'No se pudo calificar el cuestionario. El equipo fue notificado.' }) }}",
+        "options": {
+          "responseCode": 500
+        }
+      },
+      "id": "c1000000-0000-4000-8000-000000000011",
+      "name": "Responder Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [540, 320]
+    }
+  ],
+  "connections": {
+    "Webhook Clave": {
+      "main": [[{ "node": "Pinecone Insertar", "type": "main", "index": 0 }]]
+    },
+    "Embeddings Carga": {
+      "ai_embedding": [[{ "node": "Pinecone Insertar", "type": "ai_embedding", "index": 0 }]]
+    },
+    "Data Loader": {
+      "ai_document": [[{ "node": "Pinecone Insertar", "type": "ai_document", "index": 0 }]]
+    },
+    "Text Splitter": {
+      "ai_textSplitter": [[{ "node": "Data Loader", "type": "ai_textSplitter", "index": 0 }]]
+    },
+    "Webhook Calificar": {
+      "main": [[{ "node": "Agente Calificador", "type": "main", "index": 0 }]]
+    },
+    "OpenAI": {
+      "ai_languageModel": [[{ "node": "Agente Calificador", "type": "ai_languageModel", "index": 0 }]]
+    },
+    "Pinecone Clave": {
+      "ai_tool": [[{ "node": "Agente Calificador", "type": "ai_tool", "index": 0 }]]
+    },
+    "Embeddings Consulta": {
+      "ai_embedding": [[{ "node": "Pinecone Clave", "type": "ai_embedding", "index": 0 }]]
+    },
+    "Formato Calificación": {
+      "ai_outputParser": [[{ "node": "Agente Calificador", "type": "ai_outputParser", "index": 0 }]]
+    },
+    "Agente Calificador": {
+      "main": [
+        [{ "node": "Preparar Fila", "type": "main", "index": 0 }],
+        [{ "node": "Alerta Slack", "type": "main", "index": 0 }]
+      ]
+    },
+    "Preparar Fila": {
+      "main": [[{ "node": "Registrar en Sheets", "type": "main", "index": 0 }]]
+    },
+    "Registrar en Sheets": {
+      "main": [[{ "node": "Responder Resultado", "type": "main", "index": 0 }]]
+    },
+    "Alerta Slack": {
+      "main": [[{ "node": "Responder Error", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
