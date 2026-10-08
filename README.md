@@ -1,18 +1,135 @@
-# Auto-Grader
-Flujo para calificar examenes
+# Auto-Grader - Calificador Automático de Cuestionarios con IA
+Flujo n8n que califica cuestionarios de forma automática usando un agente de IA, búsqueda semántica (RAG) y registro automático en Google Sheets. Diseñado para docentes que necesitan calificar grandes volúmenes de respuestas sin intervención manual.
 
-Listo. Para importarlo, copia el JSON y pégalo en el lienzo de n8n.
+¿Qué problema resuelve?
 
-Cómo funciona ahora. El flujo tiene dos entradas:
+Calificar cuestionarios manualmente es un proceso repetitivo que puede tomar horas o días dependiendo del número de alumnos. Este flujo automatiza el proceso completo: el docente carga la clave de respuestas una sola vez, y a partir de ahí el sistema califica cada entrega en segundos, con feedback por pregunta y registro automático de resultados.
 
-POST /quiz-reference carga la clave de respuestas de cada cuestionario en Pinecone. Cada cuestionario va en su propio namespace según su quiz_id, así que las claves no se mezclan.
-POST /quiz-auto-grader recibe las respuestas del alumno. El agente consulta la clave y califica pregunta por pregunta. Luego un nodo de código suma el puntaje, porque es más confiable que dejar la suma al modelo. Al final registra el resultado en Sheets y responde con la calificación en JSON. Si algo falla, avisa en Slack y responde con error 500.
+Arquitectura
+POST /quiz-reference          →  Pinecone (clave de respuestas vectorizada por quiz_id)
+POST /quiz-auto-grader        →  Agente IA → consulta clave → califica → Google Sheets
+                                                                         → Respuesta JSON
+                              En caso de error → Alerta Slack + HTTP 500
 
-Quité la memoria de conversación, porque cada calificación es independiente y solo introducía riesgo de mezclar alumnos.
+Stack:
 
-Antes de activarlo:
+n8n — orquestación del flujo
+OpenAI GPT-4o mini — agente calificador (temperatura 0 para resultados consistentes)
+Cohere embed-multilingual-v3.0 — embeddings multilingües (ideal para contenido en español)
+Pinecone — almacenamiento vectorial de claves de respuestas por namespace
+Google Sheets — registro de resultados
+Slack — alertas de error en tiempo real
+Cómo funciona
+1. Cargar clave de respuestas
+http
+POST /quiz-reference
+Content-Type: application/json
 
-Índice de Pinecone. Crea uno llamado quiz-auto-grader con 1024 dimensiones y métrica cosine. Es lo que usa embed-multilingual-v3.0, que elegí porque tus contenidos probablemente estén en español.
-Hoja de cálculo. En la hoja "Log" pon estos encabezados: Fecha, Quiz, ID alumno, Alumno, Puntaje, Puntaje máximo, Porcentaje, Revisar, Resumen, Detalle. Después reemplaza SHEET_ID por el ID de tu hoja.
-Credenciales. Asigna las de OpenAI, Cohere, Pinecone, Google Sheets y Slack.
-Datos de prueba. Carga primero una clave con el webhook de referencia y después prueba la calificación.
+{
+  "quiz_id": "quiz-01",
+  "content": "q1: La capital de Francia es París (1 pt)..."
+}
+
+La clave se vectoriza con Cohere y se almacena en Pinecone bajo el namespace quiz_id. Cada cuestionario tiene su propio namespace, por lo que las claves nunca se mezclan.
+
+2. Calificar respuestas de un alumno
+http
+POST /quiz-auto-grader
+Content-Type: application/json
+
+{
+  "quiz_id": "quiz-01",
+  "student_id": "A123",
+  "student_name": "Ana López",
+  "answers": [
+    { "question_id": "q1", "question": "¿Capital de Francia?", "answer": "París" }
+  ]
+}
+
+El agente:
+
+Consulta la clave de respuestas en Pinecone por similitud semántica
+Califica cada pregunta aceptando sinónimos y errores menores de ortografía
+Genera feedback breve por pregunta en español
+Un nodo de código calcula el puntaje final (no el modelo, para mayor confiabilidad)
+Registra el resultado en Google Sheets
+Responde con la calificación en JSON
+
+Respuesta de ejemplo:
+
+json
+{
+  "quiz_id": "quiz-01",
+  "student_id": "A123",
+  "student_name": "Ana López",
+  "score": 1,
+  "max_score": 1,
+  "percentage": 100.0,
+  "needs_review": false,
+  "summary": "Excelente desempeño.",
+  "questions": [
+    {
+      "question_id": "q1",
+      "points": 1,
+      "max_points": 1,
+      "correct": true,
+      "feedback": "Respuesta correcta."
+    }
+  ]
+}
+
+Si el agente no encuentra la respuesta correcta de una pregunta en la clave, asigna 0 puntos, indica en el feedback que falta en la clave y marca needs_review: true.
+
+Configuración
+1. Índice de Pinecone
+
+Crea un índice llamado quiz-auto-grader con:
+
+Dimensiones: 1024
+Métrica: cosine
+2. Hoja de cálculo en Google Sheets
+
+Crea una hoja llamada Log con los siguientes encabezados en la fila 1:
+
+Fecha	Quiz	ID alumno	Alumno	Puntaje	Puntaje máximo	Porcentaje	Revisar	Resumen	Detalle
+
+Reemplaza SHEET_ID en el nodo de Google Sheets con el ID de tu hoja.
+
+3. Credenciales en n8n
+
+Configura las siguientes credenciales:
+
+OpenAI — API key de OpenAI
+Cohere — API key de Cohere
+Pinecone — API key de Pinecone
+Google Sheets — OAuth2 de Google
+Slack — API token (para alertas de error)
+Importar el flujo
+Copia el contenido de quiz_auto_grader_workflow.json
+En n8n, ve a Workflows → Import from JSON
+Pega el JSON y guarda
+Asigna las credenciales en cada nodo
+Activa el flujo
+Prueba rápida
+bash
+# 1. Cargar clave de respuestas
+curl -X POST https://TU-N8N/webhook/quiz-reference \
+  -H "Content-Type: application/json" \
+  -d '{"quiz_id":"prueba-01","content":"q1: La capital de México es Ciudad de México (1 pt)"}'
+
+# 2. Calificar un alumno
+curl -X POST https://TU-N8N/webhook/quiz-auto-grader \
+  -H "Content-Type: application/json" \
+  -d '{
+    "quiz_id": "prueba-01",
+    "student_id": "B001",
+    "student_name": "Carlos Pérez",
+    "answers": [{"question_id":"q1","question":"¿Capital de México?","answer":"CDMX"}]
+  }'
+Decisiones de diseño
+Sin memoria de conversación: Cada calificación es independiente. La memoria introduciría riesgo de mezclar contexto entre alumnos.
+Puntaje calculado en código: El nodo JavaScript suma los puntos en lugar de confiar en la suma del modelo, lo que garantiza precisión matemática.
+Namespaces por quiz_id: Cada cuestionario tiene su propio espacio en Pinecone, evitando colisiones entre distintos exámenes.
+Licencia
+
+MIT
